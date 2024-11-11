@@ -1,0 +1,190 @@
+Hello everyone,
+
+In this guide, I'll walk you through integrating Perplexica into an existing Docker setup. This step-by-step tutorial will show you how to deploy Perplexica alongside your current infrastructure while maintaining seamless interactions with your other services.
+
+Base Infrastructure
+Overview of My Docker Environment
+I have a Docker server running at 192.168.1.150, which hosts the following containers that we will integrate with Perplexica:
+
+Searx: accessible at https://searx.domaine.fr
+Ollama: accessible at http://192.168.112.3:11434
+Swag (Nginx): a reverse proxy to manage domain access and route traffic to Perplexica.
+Architecture Diagram
+rust
+Copier le code
+                _______________________________________________________________________________________
+               |DOCKER with 3 containers                                                               |
+               |_______________________________________________________________________________________|       
+Internet <---> |Reverse proxy Swag (192.168.1.150) (Nginx with HTTPS) <-------> Perplexica Frontend (http)|
+               |                                          |---> Perplexica Backend (http)              |
+               |                                          |---> Ollama (http://192.168.112.3:11434)     |
+               |                                          |---> Searx (https://searx.domaine.fr/)       |
+               |_______________________________________________________________________________________|
+Objectives
+Add two containers using docker-compose:
+
+Perplexica Backend, accessible on port 3031.
+Perplexica Frontend.
+Configure the reverse proxy to map the domains perplexica.domaine.fr and perplexica-backend.domaine.fr to the appropriate containers.
+
+Step 1: DNS and Reverse Proxy Setup
+Start by configuring your DNS records and Nginx proxy settings.
+
+DNS Configuration
+Add the following entries to your DNS server:
+
+perplexica.domaine.fr --> 192.168.1.150:3000
+perplexica-backend.domaine.fr --> 192.168.1.150:3031
+Nginx Reverse Proxy Configuration
+Create or modify the Nginx configuration files to route traffic to Perplexica.
+
+File: perplexica.subdomain.conf for the frontend
+'
+nginx
+Copier le code
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name perplexica.*;
+
+    include /config/nginx/ssl.conf;
+    client_max_body_size 0;
+
+    location / {
+        include /config/nginx/proxy.conf;
+        include /config/nginx/resolver.conf;
+        set $upstream_app 192.168.1.150;
+        set $upstream_port 3000;
+        set $upstream_proto http;
+        proxy_pass $upstream_proto://$upstream_app:$upstream_port;
+    }
+}
+File: perplexica-backend.subdomain.conf for the backend
+
+nginx
+Copier le code
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name perplexica-backend.*;
+
+    include /config/nginx/ssl.conf;
+    client_max_body_size 0;
+
+    location / {
+        include /config/nginx/proxy.conf;
+        include /config/nginx/resolver.conf;
+        set $upstream_app 192.168.1.150;
+        set $upstream_port 3031;
+        set $upstream_proto http;
+        proxy_pass $upstream_proto://$upstream_app:$upstream_port;
+    }
+}
+Step 2: Preparing the Docker Server
+On your Docker server, follow these steps:
+
+Create the project directory
+
+bash
+Copier le code
+sudo mkdir /volume1/docker/perplexica
+cd /volume1/docker/perplexica
+Clone the Git repository
+
+bash
+Copier le code
+git clone https://github.com/ItzCrazyKns/Perplexica.git
+cd Perplexica
+Modify the configuration file Copy and edit the configuration file:
+
+bash
+Copier le code
+cp sample.config.toml config.toml
+nano config.toml
+Change the default port 3001 to 3031 to avoid conflicts:
+
+toml
+Copier le code
+[GENERAL]
+PORT = 3031
+SIMILARITY_MEASURE = "cosine"
+
+[API_ENDPOINTS]
+SEARXNG = "https://searx.domaine.fr/"
+OLLAMA = "http://192.168.112.3:11434"
+Step 3: Customizing docker-compose.yaml
+Update docker-compose.yaml to fit your existing setup:
+
+Key adjustments:
+
+Remove the Searx service since it's already running.
+Replace port 3001 with 3031 for the backend.
+Update the service URLs.
+File: docker-compose.yaml
+
+yaml
+Copier le code
+services:
+  perplexica-backend:
+    build:
+      context: .
+      dockerfile: backend.dockerfile
+    image: itzcrazykns1337/perplexica-backend:main
+    environment:
+      - SEARXNG_API_URL=https://searx.domaine.fr/
+    ports:
+      - 3031:3001
+    volumes:
+      - backend-dbstore:/home/perplexica/data
+      - ./config.toml:/home/perplexica/config.toml
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    networks:
+      - perplexica-network
+    restart: unless-stopped
+
+  perplexica-frontend:
+    build:
+      context: .
+      dockerfile: app.dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=https://perplexica.domaine.fr/api
+        - NEXT_PUBLIC_WS_URL=wss://perplexica.domaine.fr
+    image: itzcrazykns1337/perplexica-frontend:main
+    depends_on:
+      - perplexica-backend
+    ports:
+      - 3000:3000
+    networks:
+      - perplexica-network
+    restart: unless-stopped
+
+networks:
+  perplexica-network:
+
+volumes:
+  backend-dbstore:
+Step 4: Customizing the App Dockerfile
+Update app.dockerfile
+
+dockerfile
+Copier le code
+FROM node:alpine
+
+ARG NEXT_PUBLIC_WS_URL=wss://perplexica-backend.domaine.fr
+ARG NEXT_PUBLIC_API_URL=https://perplexica-backend.domaine.fr/api
+ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
+WORKDIR /home/perplexica
+COPY ui /home/perplexica/
+
+RUN yarn install --frozen-lockfile
+RUN yarn build
+Deployment
+To build and start the containers, run:
+
+bash
+Copier le code
+docker compose up -d --build
+And that's it! Perplexica is now running and ready to be explored within your existing Docker setup.
